@@ -15,16 +15,19 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# 2. Inicialización de FastAPI + Configuración CORS para Jony (App) y Dani (Web)
+# Parámetro de radio máximo de acercamiento (3 km = 3000 metros)
+RADIO_MAXIMO_METROS = 3000.0
+
+# 2. Inicialización de FastAPI + Configuración CORS
 app = FastAPI(
     title="UTRide - Microservicio Espacial y Métricas de Ruta",
-    description="Algoritmo Evolutivo Diferencial + OSRM + Supabase para puntos de encuentro (<= 400m) y distancias de tarifa",
+    description="Algoritmo Evolutivo Diferencial + OSRM + Supabase para puntos de encuentro (<= 3 km) y distancias de tarifa",
     version="1.2.0"
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Permite peticiones desde la App móvil y la Web
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -67,7 +70,6 @@ def obtener_ruta_osrm(origen: tuple, destino: tuple) -> np.ndarray:
     return np.array([(lat, lon) for lon, lat in puntos])
 
 def calcular_distancias_acumuladas_km(ruta_nodos: np.ndarray) -> np.ndarray:
-    """Calcula vectorizadamente los km acumulados en cada nodo de la trayectoria OSRM."""
     if len(ruta_nodos) < 2:
         return np.zeros(len(ruta_nodos))
     R_km = 6371.0
@@ -94,7 +96,7 @@ def de_optimizar_parada(matriz_distancias: np.ndarray, col_pasajero: int, tam_po
     def fitness_func(x):
         idx = int(np.clip(round(x), lim_inf, lim_sup))
         dist = matriz_distancias[idx, col_pasajero]
-        return dist if dist <= 400.0 else dist + (dist - 400.0) * 10.0
+        return dist if dist <= RADIO_MAXIMO_METROS else dist + (dist - RADIO_MAXIMO_METROS) * 10.0
 
     poblacion = np.random.uniform(lim_inf, lim_sup, tam_pob)
     fitness = np.array([fitness_func(ind) for ind in poblacion])
@@ -115,7 +117,7 @@ def de_optimizar_parada(matriz_distancias: np.ndarray, col_pasajero: int, tam_po
     distancia_final = round(float(matriz_distancias[nodo_optimo, col_pasajero]), 2)
     return nodo_optimo, distancia_final
 
-# 6. Endpoint productivo para Jony (App Móvil) y Jorge (Módulo de Tarifas)
+# 6. Endpoint productivo
 @app.post("/api/v1/recomendar-parada-bd")
 def recomendar_desde_supabase(solicitud: SolicitudConBD):
     inicio = time.perf_counter()
@@ -126,7 +128,6 @@ def recomendar_desde_supabase(solicitud: SolicitudConBD):
     ruta_matriz = obtener_ruta_osrm(origen, destino)
     dist_acumulada_km = calcular_distancias_acumuladas_km(ruta_matriz)
     
-    # Si aún no estaba guardada en Supabase, la calculamos y la guardamos automáticamente
     if distancia_guardada is None:
         distancia_total_km = round(float(dist_acumulada_km[-1]), 2)
         supabase.table("rutas_conductores").update(
@@ -144,7 +145,7 @@ def recomendar_desde_supabase(solicitud: SolicitudConBD):
 
         resultados.append({
             "pasajero_index": idx_p,
-            "compatible": bool(dist_m <= 400.0),
+            "compatible": bool(dist_m <= RADIO_MAXIMO_METROS),
             "punto_encuentro": {
                 "lat": round(float(ruta_matriz[nodo][0]), 6),
                 "lon": round(float(ruta_matriz[nodo][1]), 6)
